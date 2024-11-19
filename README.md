@@ -1,4 +1,5 @@
 # esp32-c3-buddy-like board
+<img src="https://github.com/user-attachments/assets/1ce4e032-0fc8-434c-8a3f-b22e013efab5" height="128">
 
 ## up and running
 
