@@ -20,3 +20,6 @@
 
 - [wifi](examples/wifi.rs)
   `cargo espflash flash --release --example wifi`
+
+- [counter](examples/counter.rs)
+  `cargo espflash flash --release --example counter`
