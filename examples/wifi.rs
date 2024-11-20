@@ -33,7 +33,7 @@ use smoltcp::iface::SocketStorage;
 
 use sh1106::{prelude::*, Builder};
 const SSID: &str = "SSID"; // env!("SSID");
-const PASSWORD: &str = "PASSWORD"; // env!("PASSWORD");
+const PASSWORD: &str = "PSSWD"; // env!("PASSWORD");
 
 #[entry]
 fn main() -> ! {
