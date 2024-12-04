@@ -26,3 +26,6 @@
 
 - [esp-now-no-display](examples/esp-now-no-display.rs)
   `cargo espflash flash --release --example esp-now-no-display`
+
+- [esp-now-receiver](examples/esp-now-receiver.rs)
+  `cargo espflash flash --release --example esp-now-receiver`

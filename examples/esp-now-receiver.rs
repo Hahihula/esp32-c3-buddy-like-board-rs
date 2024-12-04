@@ -4,7 +4,7 @@
 use core::fmt::Write as FmtWrite;
 use core::str;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_6X10, MonoTextStyleBuilder},
+    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text},
@@ -15,15 +15,7 @@ use esp_wifi::{
     esp_now::{PeerInfo, BROADCAST_ADDRESS},
     init, EspWifiInitFor,
 };
-use hal::{
-    delay::Delay,
-    gpio::{Input, Io, Pull},
-    i2c,
-    prelude::*,
-    rng::Rng,
-    time::{self, Duration},
-    timer::timg::TimerGroup,
-};
+use hal::{gpio::Io, i2c, prelude::*, rng::Rng, timer::timg::TimerGroup};
 use sh1106::{prelude::*, Builder};
 
 fn bytes_to_ascii_string(bytes: &[u8; 256]) -> Result<&str, str::Utf8Error> {
@@ -64,8 +56,6 @@ fn main() -> ! {
 
     println!("esp-now version {}", esp_now.get_version().unwrap());
 
-    let delay = Delay::new();
-
     let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let sda = io.pins.gpio5;
@@ -89,11 +79,6 @@ fn main() -> ! {
         .text_color(BinaryColor::On)
         .build();
 
-    let number_style = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(BinaryColor::On)
-        .build();
-
     display.clear();
     Text::with_baseline(
         "ESP-NOW receiver:",
@@ -105,7 +90,6 @@ fn main() -> ! {
     .unwrap();
     display.flush().unwrap();
 
-    let mut next_send_time = time::now() + Duration::secs(5);
     loop {
         let r = esp_now.receive();
         if let Some(r) = r {
