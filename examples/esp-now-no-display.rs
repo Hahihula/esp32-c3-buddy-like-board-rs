@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-
+use core::fmt::Write as FmtWrite;
 use esp_backtrace as _;
 use esp_println::println;
 use esp_wifi::{
@@ -25,10 +25,12 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
+    let mut rng = Rng::new(peripherals.RNG);
+
     let init = init(
         EspWifiInitFor::Wifi,
         timg0.timer0,
-        Rng::new(peripherals.RNG),
+        rng,
         peripherals.RADIO_CLK,
     )
     .unwrap();
@@ -39,6 +41,7 @@ fn main() -> ! {
     println!("esp-now version {}", esp_now.get_version().unwrap());
 
     let mut next_send_time = time::now() + Duration::secs(5);
+
     loop {
         let r = esp_now.receive();
         if let Some(r) = r {
@@ -66,7 +69,17 @@ fn main() -> ! {
         if time::now() >= next_send_time {
             next_send_time = time::now() + Duration::secs(5);
             println!("Send");
-            let status = esp_now.send(&BROADCAST_ADDRESS, b"Hello").unwrap().wait();
+            let message: [u8; 1] = 42_u8.to_be_bytes();
+            let random_number: u32 = rng.random() % 128;
+            let mut counter_string: heapless::String<4> = heapless::String::new();
+            match write!(counter_string, "{}", random_number) {
+                Ok(_) => (),
+                Err(e) => println!("Error writing: {:?}", e),
+            }
+            let status = esp_now
+                .send(&BROADCAST_ADDRESS, counter_string.as_bytes())
+                .unwrap()
+                .wait();
             println!("Send broadcast status: {:?}", status)
         }
     }
