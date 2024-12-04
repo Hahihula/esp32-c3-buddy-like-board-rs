@@ -1,13 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write as FmtWrite;
-use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_6X10, MonoTextStyleBuilder},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    text::{Baseline, Text},
-};
 use esp_backtrace as _;
 use esp_println::println;
 use esp_wifi::{
@@ -15,16 +8,11 @@ use esp_wifi::{
     init, EspWifiInitFor,
 };
 use hal::{
-    delay::Delay,
-    gpio::{Input, Io, Pull},
-    i2c,
     prelude::*,
     rng::Rng,
     time::{self, Duration},
     timer::timg::TimerGroup,
 };
-
-use sh1106::{prelude::*, Builder};
 
 #[entry]
 fn main() -> ! {
@@ -34,8 +22,6 @@ fn main() -> ! {
         config.cpu_clock = CpuClock::max();
         config
     });
-
-    let delay = Delay::new();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
