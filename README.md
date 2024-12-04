@@ -23,3 +23,6 @@
 
 - [counter](examples/counter.rs)
   `cargo espflash flash --release --example counter`
+
+- [esp-now-no-display](examples/esp-now-no-display.rs)
+  `cargo espflash flash --release --example esp-now-no-display`
