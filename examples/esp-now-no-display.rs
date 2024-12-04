@@ -66,10 +66,7 @@ fn main() -> ! {
         if time::now() >= next_send_time {
             next_send_time = time::now() + Duration::secs(5);
             println!("Send");
-            let status = esp_now
-                .send(&BROADCAST_ADDRESS, b"0123456789")
-                .unwrap()
-                .wait();
+            let status = esp_now.send(&BROADCAST_ADDRESS, b"Hello").unwrap().wait();
             println!("Send broadcast status: {:?}", status)
         }
     }
