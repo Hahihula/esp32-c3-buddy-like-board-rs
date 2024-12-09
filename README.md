@@ -24,6 +24,9 @@
 - [counter](examples/counter.rs)
   `cargo espflash flash --release --example counter`
 
+- [interupt counter](examples/interupt-counter.rs)
+  `cargo espflash flash --release --example interupt-counter`
+
 - [esp-now-no-display](examples/esp-now-no-display.rs)
   `cargo espflash flash --release --example esp-now-no-display`
 
