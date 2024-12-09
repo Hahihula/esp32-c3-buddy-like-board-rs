@@ -458,6 +458,7 @@ dependencies = [
 name = "esp32-c3-buddy-like"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "embedded-graphics",
  "esp-alloc",
  "esp-backtrace",
