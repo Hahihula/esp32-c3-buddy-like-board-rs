@@ -1,201 +1,142 @@
 #![no_std]
 #![no_main]
-
-use embedded_graphics::{
-    mono_font::{ascii::FONT_4X6, ascii::FONT_6X10, MonoTextStyleBuilder},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    text::{Baseline, Text},
-};
-
 use core::fmt::Write as FmtWrite;
 use esp_backtrace as _;
 use esp_println::println;
 use esp_wifi::{
-    init,
-    wifi::{
-        utils::create_network_interface, AccessPointInfo, ClientConfiguration, Configuration,
-        WifiError, WifiStaDevice,
-    },
-    wifi_interface::WifiStack,
-    EspWifiInitFor,
+    esp_now::{PeerInfo, BROADCAST_ADDRESS},
+    init, EspWifiInitFor,
 };
 use hal::{
-    delay::Delay,
-    gpio::Io,
-    i2c,
+    gpio::{Event, Input, Io, Pull},
     prelude::*,
     rng::Rng,
-    time::{self},
+    time::{self, Duration},
     timer::timg::TimerGroup,
 };
-use smoltcp::iface::SocketStorage;
 
-use sh1106::{prelude::*, Builder};
-const SSID: &str = "SSID"; // env!("SSID");
-const PASSWORD: &str = "PASSWORD"; // env!("PASSWORD");
+use core::cell::RefCell;
+use critical_section::Mutex;
+
+static BUTTON: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+
+static COUNTER: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
 
 #[entry]
 fn main() -> ! {
     esp_alloc::heap_allocator!(72 * 1024);
+    let peripherals = hal::init({
+        let mut config = hal::Config::default();
+        config.cpu_clock = CpuClock::max();
+        config
+    });
 
-    let peripherals = hal::init(hal::Config::default());
+    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let timer = TimerGroup::new(peripherals.TIMG1).timer0;
+    io.set_interrupt_handler(handler);
 
-    let delay = Delay::new();
+    let button_pin = io.pins.gpio3;
+    let mut button = Input::new(button_pin, Pull::None);
 
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    critical_section::with(|cs| {
+        COUNTER.borrow_ref_mut(cs);
+        button.listen(Event::AnyEdge);
+        BUTTON.borrow_ref_mut(cs).replace(button)
+    });
 
-    let sda = io.pins.gpio5;
-    let scl = io.pins.gpio6;
-
-    let i2c = i2c::I2c::new(peripherals.I2C0, sda, scl, 100u32.kHz());
-
-    let mut display: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
-    match display.init() {
-        Ok(_) => (),
-        Err(e) => println!("Error initializing display: {:?}", e),
-    }
-    display.flush().unwrap();
-
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-
-    // with the 6x10 font, IP address is too long to fit on the screen
-    let ip_text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_4X6)
-        .text_color(BinaryColor::On)
-        .build();
-
-    // positions on the screen
-    // the zero point on the screen is (28, 12)
-    let starting_point = Point::new(28, 12);
-    let ip_point = starting_point + Point::new(0, 36);
-
-    display.clear();
-    Text::with_baseline("WiFi example", starting_point, text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-
-    display.flush().unwrap();
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
 
     let rng = Rng::new(peripherals.RNG);
 
-    let init = init(EspWifiInitFor::Wifi, timer, rng, peripherals.RADIO_CLK)
-        .map_err(|e| println!("Failed to initialize wifi {:?}", e))
-        .unwrap();
+    let init = init(
+        EspWifiInitFor::Wifi,
+        timg0.timer0,
+        rng,
+        peripherals.RADIO_CLK,
+    )
+    .unwrap();
 
     let wifi = peripherals.WIFI;
-    let mut socket_set_entries: [SocketStorage; 5] = Default::default();
-    let (iface, device, mut controller, sockets) =
-        create_network_interface(&init, wifi, WifiStaDevice, &mut socket_set_entries).unwrap();
+    let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
 
-    let now = || time::now().duration_since_epoch().to_millis();
+    println!("esp-now version {}", esp_now.get_version().unwrap());
 
-    let wifi_stack = WifiStack::new(iface, device, sockets, now);
-
-    let client_config = Configuration::Client(ClientConfiguration {
-        ssid: SSID.try_into().unwrap(),
-        password: PASSWORD.try_into().unwrap(),
-        ..Default::default()
-    });
-    let res = controller.set_configuration(&client_config);
-    println!("wifi_set_configuration returned {:?}", res);
-
-    controller.start().unwrap();
-    println!("is wifi started: {:?}", controller.is_started());
-
-    println!("Start Wifi Scan");
-    let res: Result<(heapless::Vec<AccessPointInfo, 10>, usize), WifiError> = controller.scan_n();
-    if let Ok((res, _count)) = res {
-        for ap in res {
-            println!("{:?}", ap);
-        }
-    }
-
-    println!("{:?}", controller.get_capabilities());
-    println!("wifi_connect {:?}", controller.connect());
-
-    // wait to get connected
-    println!("Wait to get connected");
-    display.clear();
-    Text::with_baseline(
-        "WiFi example\nconnecting...",
-        starting_point,
-        text_style,
-        Baseline::Top,
-    )
-    .draw(&mut display)
-    .unwrap();
-    match display.flush() {
-        Ok(_) => (),
-        Err(e) => println!("Error flushing display: {:?}", e),
-    };
+    let mut next_send_time = time::now() + Duration::secs(5);
 
     loop {
-        let res = controller.is_connected();
-        match res {
-            Ok(connected) => {
-                if connected {
-                    break;
+        let r = esp_now.receive();
+        if let Some(r) = r {
+            println!("Received {:?}", r);
+
+            if r.info.dst_address == BROADCAST_ADDRESS {
+                if !esp_now.peer_exists(&r.info.src_address) {
+                    esp_now
+                        .add_peer(PeerInfo {
+                            peer_address: r.info.src_address,
+                            lmk: None,
+                            channel: None,
+                            encrypt: false,
+                        })
+                        .unwrap();
                 }
-            }
-            Err(err) => {
-                println!("{:?}", err);
-                loop {}
+                let status = esp_now
+                    .send(&r.info.src_address, b"Hello Peer")
+                    .unwrap()
+                    .wait();
+                println!("Send hello to peer status: {:?}", status);
             }
         }
-    }
-    println!("{:?}", controller.is_connected());
 
-    // wait for getting an ip address
-    println!("Waiting for ip...");
+        if time::now() >= next_send_time {
+            next_send_time = time::now() + Duration::secs(5);
+            println!("Send");
+            let message: [u8; 1] = 42_u8.to_be_bytes();
 
-    loop {
-        wifi_stack.work();
+            // Get current counter value from the mutex
+            let current_counter = critical_section::with(|cs| *COUNTER.borrow_ref(cs));
 
-        if wifi_stack.is_iface_up() {
-            println!("got ip {:?}", wifi_stack.get_ip_info());
-
-            let mut ip_addr: heapless::String<256> = heapless::String::new();
-            let bytes = wifi_stack.get_ip_info().unwrap().ip.octets();
-            match write!(
-                ip_addr,
-                "{}.{}.{}.{}",
-                bytes[0], bytes[1], bytes[2], bytes[3]
-            ) {
+            // let random_number: u32 = rng.random() % 128;
+            let mut counter_string: heapless::String<4> = heapless::String::new();
+            match write!(counter_string, "{}", current_counter) {
                 Ok(_) => (),
-                Err(e) => println!("Error writing ip: {:?}", e),
+                Err(e) => println!("Error writing: {:?}", e),
             }
-            // .unwrap();
-            display.clear();
-            Text::with_baseline(
-                "WiFi example\nConnected.\nIP:",
-                starting_point,
-                text_style,
-                Baseline::Top,
-            )
-            .draw(&mut display)
-            .unwrap();
-            Text::new(&ip_addr, ip_point, ip_text_style)
-                .draw(&mut display)
-                .unwrap();
-            match display.flush() {
-                Ok(_) => (),
-                Err(e) => println!("Error flushing display: {:?}", e),
-            }
-            break;
+            let status = esp_now
+                .send(&BROADCAST_ADDRESS, counter_string.as_bytes())
+                .unwrap()
+                .wait();
+            println!("Send broadcast status: {:?}", status)
         }
     }
+}
 
-    println!("Start busy loop on main");
+#[handler]
+#[ram]
+fn handler() {
+    esp_println::println!("GPIO Interrupt");
 
-    let mut rx_buffer = [0u8; 1536];
-    let mut tx_buffer = [0u8; 1536];
-    let _socket = wifi_stack.get_socket(&mut rx_buffer, &mut tx_buffer);
+    if critical_section::with(|cs| {
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .is_interrupt_set()
+    }) {
+        esp_println::println!("Button was the source of the interrupt");
+        critical_section::with(|cs| {
+            let mut counter = COUNTER.borrow_ref_mut(cs);
+            *counter += 1;
+            println!("Counter incremented to: {}", *counter);
+        });
+    } else {
+        esp_println::println!("Button was not the source of the interrupt");
+    }
 
-    loop {}
+    critical_section::with(|cs| {
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt()
+    });
 }

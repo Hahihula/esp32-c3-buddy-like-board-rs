@@ -72,8 +72,6 @@ fn main() -> ! {
         BUTTON.borrow_ref_mut(cs).replace(button)
     });
 
-    let mut last_counter_change = time::now().duration_since_epoch().to_millis();
-
     loop {
         display.clear();
         Text::with_baseline("Counter:", starting_point, text_style, Baseline::Top)
