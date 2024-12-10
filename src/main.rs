@@ -22,6 +22,8 @@ static BUTTON: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 
 static COUNTER: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
 
+// Circular buffer to store counts for each second
+
 #[entry]
 fn main() -> ! {
     esp_alloc::heap_allocator!(72 * 1024);
@@ -40,7 +42,7 @@ fn main() -> ! {
 
     critical_section::with(|cs| {
         COUNTER.borrow_ref_mut(cs);
-        button.listen(Event::AnyEdge);
+        button.listen(Event::FallingEdge);
         BUTTON.borrow_ref_mut(cs).replace(button)
     });
 
@@ -61,7 +63,10 @@ fn main() -> ! {
 
     println!("esp-now version {}", esp_now.get_version().unwrap());
 
-    let mut next_send_time = time::now() + Duration::secs(5);
+    let mut next_send_time = time::now() + Duration::secs(1);
+
+    let mut second_counts: [u32; 60] = [0; 60];
+    let mut current_index: usize = 0;
 
     loop {
         let r = esp_now.receive();
@@ -88,16 +93,24 @@ fn main() -> ! {
         }
 
         if time::now() >= next_send_time {
-            next_send_time = time::now() + Duration::secs(5);
+            next_send_time = time::now() + Duration::secs(1);
             println!("Send");
             let message: [u8; 1] = 42_u8.to_be_bytes();
 
             // Get current counter value from the mutex
-            let current_counter = critical_section::with(|cs| *COUNTER.borrow_ref(cs));
+            let current_counter = critical_section::with(|cs| {
+                let value = *COUNTER.borrow_ref_mut(cs);
+                *COUNTER.borrow_ref_mut(cs) = 0;
+                value
+            });
+            second_counts[current_index] = current_counter;
+            current_index = (current_index + 1) % 60;
+
+            let total = second_counts.iter().sum::<u32>();
 
             // let random_number: u32 = rng.random() % 128;
             let mut counter_string: heapless::String<4> = heapless::String::new();
-            match write!(counter_string, "{}", current_counter) {
+            match write!(counter_string, "{}", total) {
                 Ok(_) => (),
                 Err(e) => println!("Error writing: {:?}", e),
             }
