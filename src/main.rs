@@ -1,155 +1,159 @@
 #![no_std]
 #![no_main]
-use core::fmt::Write as FmtWrite;
+
 use esp_backtrace as _;
 use esp_println::println;
-use esp_wifi::{
-    esp_now::{PeerInfo, BROADCAST_ADDRESS},
-    init, EspWifiInitFor,
-};
+use hal::ledc::channel::config::PinConfig;
 use hal::{
-    gpio::{Event, Input, Io, Pull},
+    delay::Delay,
+    gpio::{Io, Level, Output},
     prelude::*,
-    rng::Rng,
-    time::{self, Duration},
-    timer::timg::TimerGroup,
+    timer::Timer,
 };
 
-use core::cell::RefCell;
-use critical_section::Mutex;
+#[derive(Debug, Clone, Copy)]
+struct RgbwColor {
+    r: u8,
+    g: u8,
+    b: u8,
+    w: u8,
+}
 
-static BUTTON: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+struct Sk6812Strip<'a> {
+    data_pin: Output<'a>,
+    delay: Delay,
+    buffer: [RgbwColor; NUM_LEDS],
+}
 
-static COUNTER: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
-
-// Circular buffer to store counts for each second
-
-#[entry]
-fn main() -> ! {
-    esp_alloc::heap_allocator!(72 * 1024);
-    let peripherals = hal::init({
-        let mut config = hal::Config::default();
-        config.cpu_clock = CpuClock::max();
-        config
-    });
-
-    let mut io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    io.set_interrupt_handler(handler);
-
-    let button_pin = io.pins.gpio3;
-    let mut button = Input::new(button_pin, Pull::None);
-
-    critical_section::with(|cs| {
-        COUNTER.borrow_ref_mut(cs);
-        button.listen(Event::FallingEdge);
-        BUTTON.borrow_ref_mut(cs).replace(button)
-    });
-
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-
-    let rng = Rng::new(peripherals.RNG);
-
-    let init = init(
-        EspWifiInitFor::Wifi,
-        timg0.timer0,
-        rng,
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
-
-    let wifi = peripherals.WIFI;
-    let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-
-    println!("esp-now version {}", esp_now.get_version().unwrap());
-
-    let mut next_send_time = time::now() + Duration::secs(1);
-
-    let mut second_counts: [u32; 60] = [0; 60];
-    let mut current_index: usize = 0;
-
-    loop {
-        let r = esp_now.receive();
-        if let Some(r) = r {
-            println!("Received {:?}", r);
-
-            if r.info.dst_address == BROADCAST_ADDRESS {
-                if !esp_now.peer_exists(&r.info.src_address) {
-                    esp_now
-                        .add_peer(PeerInfo {
-                            peer_address: r.info.src_address,
-                            lmk: None,
-                            channel: None,
-                            encrypt: false,
-                        })
-                        .unwrap();
-                }
-                let status = esp_now
-                    .send(&r.info.src_address, b"Hello Peer")
-                    .unwrap()
-                    .wait();
-                println!("Send hello to peer status: {:?}", status);
-            }
+impl<'a> Sk6812Strip<'a> {
+    fn new(data_pin: Output<'a>) -> Self {
+        Self {
+            data_pin,
+            delay: Delay::new(),
+            buffer: [RgbwColor {
+                r: 0,
+                g: 0,
+                b: 0,
+                w: 0,
+            }; NUM_LEDS],
         }
+    }
 
-        if time::now() >= next_send_time {
-            next_send_time = time::now() + Duration::secs(1);
-            println!("Send");
-            let message: [u8; 1] = 42_u8.to_be_bytes();
+    fn set_pixel(&mut self, index: usize, color: RgbwColor) {
+        if index < NUM_LEDS {
+            self.buffer[index] = color;
+        }
+    }
 
-            // Get current counter value from the mutex
-            let current_counter = critical_section::with(|cs| {
-                let value = *COUNTER.borrow_ref_mut(cs);
-                *COUNTER.borrow_ref_mut(cs) = 0;
-                value
-            });
-            second_counts[current_index] = current_counter;
-            current_index = (current_index + 1) % 60;
-
-            let total = second_counts.iter().sum::<u32>();
-
-            // let random_number: u32 = rng.random() % 128;
-            let mut counter_string: heapless::String<4> = heapless::String::new();
-            match write!(counter_string, "{}", total) {
-                Ok(_) => (),
-                Err(e) => println!("Error writing: {:?}", e),
+    fn show(&mut self) {
+        critical_section::with(|_| {
+            for i in 0..NUM_LEDS {
+                let pixel = self.buffer[i]; // Copy the pixel data
+                self.send_byte(pixel.g);
+                self.send_byte(pixel.r);
+                self.send_byte(pixel.b);
+                self.send_byte(pixel.w);
             }
-            let status = esp_now
-                .send(&BROADCAST_ADDRESS, counter_string.as_bytes())
-                .unwrap()
-                .wait();
-            println!("Send broadcast status: {:?}", status)
+        });
+
+        // Reset signal (>50µs low)
+        self.data_pin.set_low();
+        self.delay.delay_micros(60);
+    }
+
+    fn send_byte(&mut self, mut byte: u8) {
+        for _ in 0..8 {
+            if (byte & 0x80) != 0 {
+                // One bit (800ns high, 450ns low)
+                self.data_pin.set_high();
+                self.delay.delay_nanos(800);
+                self.data_pin.set_low();
+                self.delay.delay_nanos(450);
+            } else {
+                // Zero bit (400ns high, 850ns low)
+                self.data_pin.set_high();
+                self.delay.delay_nanos(400);
+                self.data_pin.set_low();
+                self.delay.delay_nanos(850);
+            }
+            byte <<= 1;
         }
     }
 }
 
-#[handler]
-#[ram]
-fn handler() {
-    esp_println::println!("GPIO Interrupt");
+const NUM_LEDS: usize = 5;
+#[entry]
+fn main() -> ! {
+    let peripherals = hal::init(hal::Config::default());
 
-    if critical_section::with(|cs| {
-        BUTTON
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .is_interrupt_set()
-    }) {
-        esp_println::println!("Button was the source of the interrupt");
-        critical_section::with(|cs| {
-            let mut counter = COUNTER.borrow_ref_mut(cs);
-            *counter += 1;
-            println!("Counter incremented to: {}", *counter);
-        });
-    } else {
-        esp_println::println!("Button was not the source of the interrupt");
+    // Set GPIO8 as an output, and set its state high initially.
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
+    let mut led = Output::new(io.pins.gpio8, Level::High);
+
+    let delay = Delay::new();
+
+    // Initialize the LED strip on GPIO3
+    let led_pin = Output::new(io.pins.gpio3, Level::Low);
+    let mut strip = Sk6812Strip::new(led_pin);
+
+    // Example colors
+    let red = RgbwColor {
+        r: 15,
+        g: 0,
+        b: 0,
+        w: 0,
+    };
+    let green = RgbwColor {
+        r: 0,
+        g: 15,
+        b: 0,
+        w: 0,
+    };
+    let blue = RgbwColor {
+        r: 0,
+        g: 0,
+        b: 15,
+        w: 0,
+    };
+    let white = RgbwColor {
+        r: 0,
+        g: 0,
+        b: 0,
+        w: 15,
+    };
+    let purple = RgbwColor {
+        r: 15,
+        g: 0,
+        b: 15,
+        w: 0,
+    };
+
+    loop {
+        led.toggle();
+        delay.delay_millis(500);
+        led.toggle();
+        println!("Blink!");
+        strip.set_pixel(0, red);
+        strip.set_pixel(1, green);
+        strip.set_pixel(2, blue);
+        strip.set_pixel(3, white);
+        strip.set_pixel(4, purple);
+        println!("Colors set!");
+        strip.show();
+        delay.delay(1.secs());
+        for i in 0..NUM_LEDS {
+            strip.set_pixel(
+                i,
+                RgbwColor {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    w: 0,
+                },
+            );
+        }
+        strip.show();
+        println!("Colors reset!");
+        delay.delay(1.secs());
     }
-
-    critical_section::with(|cs| {
-        BUTTON
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .clear_interrupt()
-    });
 }
