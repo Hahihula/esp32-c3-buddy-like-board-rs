@@ -7,20 +7,18 @@
 #![no_main]
 
 use esp_backtrace as _;
-use hal::{
+use esp_hal::{
     delay::Delay,
     gpio::{Io, Level, Output},
-    prelude::*,
+    main
 };
 use esp_println::println;
 
-#[entry]
+#[main]
 fn main() -> ! {
-    let peripherals = hal::init(hal::Config::default());
+    let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    // Set GPIO8 as an output, and set its state high initially.
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let mut led = Output::new(io.pins.gpio8, Level::High);
+    let mut led = Output::new(peripherals.GPIO8, Level::High);
 
     let delay = Delay::new();
 
@@ -29,6 +27,6 @@ fn main() -> ! {
         delay.delay_millis(500);
         led.toggle();
         println!("Blink!");
-        delay.delay(1.secs());
+        delay.delay_millis(1000);
     }
 }
